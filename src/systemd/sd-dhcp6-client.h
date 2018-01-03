@@ -101,7 +101,7 @@ int sd_dhcp6_client_set_duid(
                 uint16_t duid_type,
                 const void *duid,
                 size_t duid_len);
-int sd_dhcp6_client_set_iaid(
+int sd_dhcp6_client_set_iaids(
                 sd_dhcp6_client *client,
                 uint32_t iaid);
 int sd_dhcp6_client_set_fqdn(

@@ -54,6 +54,7 @@ struct sd_dhcp6_client {
         size_t mac_addr_len;
         uint16_t arp_type;
         DHCP6IA ia_na;
+        DHCP6IA ia_ta;
         be32_t transaction_id;
         usec_t transaction_start;
         struct sd_dhcp6_lease *lease;
@@ -226,11 +227,12 @@ int sd_dhcp6_client_set_duid(
         return 0;
 }
 
-int sd_dhcp6_client_set_iaid(sd_dhcp6_client *client, uint32_t iaid) {
+int sd_dhcp6_client_set_iaids(sd_dhcp6_client *client, uint32_t iaid) {
         assert_return(client, -EINVAL);
         assert_return(IN_SET(client->state, DHCP6_STATE_STOPPED), -EBUSY);
 
         client->ia_na.id = htobe32(iaid);
+        client->ia_ta.id = htobe32(iaid);
 
         return 0;
 }
@@ -346,6 +348,11 @@ static int client_reset(sd_dhcp6_client *client) {
         client->ia_na.timeout_t2 =
                 sd_event_source_unref(client->ia_na.timeout_t2);
 
+        client->ia_ta.timeout_t1 =
+                sd_event_source_unref(client->ia_ta.timeout_t1);
+        client->ia_ta.timeout_t2 =
+                sd_event_source_unref(client->ia_ta.timeout_t2);
+
         client->retransmit_time = 0;
         client->retransmit_count = 0;
         client->timeout_resend = sd_event_source_unref(client->timeout_resend);
@@ -407,6 +414,11 @@ static int client_send_message(sd_dhcp6_client *client, usec_t time_now) {
                 if (r < 0)
                         return r;
 
+                // FIXME: Only if PrivacyAddresses are enabled
+                r = dhcp6_option_append_ia(&opt, &optlen, &client->ia_ta);
+                if (r < 0)
+                        return r;
+
                 if (client->fqdn) {
                         r = dhcp6_option_append_fqdn(&opt, &optlen, client->fqdn);
                         if (r < 0)
@@ -433,6 +445,8 @@ static int client_send_message(sd_dhcp6_client *client, usec_t time_now) {
                 if (r < 0)
                         return r;
 
+                // XXX: IA_TA?
+
                 if (client->fqdn) {
                         r = dhcp6_option_append_fqdn(&opt, &optlen, client->fqdn);
                         if (r < 0)
@@ -447,6 +461,8 @@ static int client_send_message(sd_dhcp6_client *client, usec_t time_now) {
                 r = dhcp6_option_append_ia(&opt, &optlen, &client->lease->ia);
                 if (r < 0)
                         return r;
+
+                // XXX: IA_TA?
 
                 if (client->fqdn) {
                         r = dhcp6_option_append_fqdn(&opt, &optlen, client->fqdn);
@@ -712,10 +728,14 @@ static int client_ensure_iaid(sd_dhcp6_client *client) {
 
         assert(client);
 
-        if (client->ia_na.id)
+        if (client->ia_na.id && client->ia_ta.id)
                 return 0;
 
         r = dhcp_identifier_set_iaid(client->ifindex, client->mac_addr, client->mac_addr_len, &client->ia_na.id);
+        if (r < 0)
+                return r;
+
+        r = dhcp_identifier_set_iaid(client->ifindex, client->mac_addr, client->mac_addr_len, &client->ia_ta.id);
         if (r < 0)
                 return r;
 
@@ -818,7 +838,30 @@ static int client_parse_message(
                                 return r;
 
                         if (client->ia_na.id != iaid_lease) {
-                                log_dhcp6_client(client, "%s has wrong IAID",
+                                log_dhcp6_client(client, "%s has wrong IAID for NA",
+                                                 dhcp6_message_type_to_string(message->type));
+                                return -EINVAL;
+                        }
+
+                        break;
+
+                case SD_DHCP6_OPTION_IA_TA:
+                        if (client->state == DHCP6_STATE_INFORMATION_REQUEST) {
+                                log_dhcp6_client(client, "Information request ignoring IA TA option");
+                                break;
+                        }
+
+                        r = dhcp6_option_parse_ia(&optval, &optlen, optcode,
+                                                  &lease->ia);
+                        if (r < 0 && r != -ENOMSG)
+                                return r;
+
+                        r = dhcp6_lease_get_iaid(lease, &iaid_lease);
+                        if (r < 0)
+                                return r;
+
+                        if (client->ia_ta.id != iaid_lease) {
+                                log_dhcp6_client(client, "%s has wrong IAID for TA",
                                                  dhcp6_message_type_to_string(message->type));
                                 return -EINVAL;
                         }
@@ -1352,6 +1395,7 @@ int sd_dhcp6_client_new(sd_dhcp6_client **ret) {
 
         client->n_ref = 1;
         client->ia_na.type = SD_DHCP6_OPTION_IA_NA;
+        client->ia_ta.type = SD_DHCP6_OPTION_IA_TA;
         client->ifindex = -1;
         client->fd = -1;
 

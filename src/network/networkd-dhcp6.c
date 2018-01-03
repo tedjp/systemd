@@ -259,7 +259,7 @@ int dhcp6_configure(Link *link) {
         if (r < 0)
                 goto error;
 
-        r = sd_dhcp6_client_set_iaid(client, link->network->iaid);
+        r = sd_dhcp6_client_set_iaids(client, link->network->iaid);
         if (r < 0)
                 goto error;
 
